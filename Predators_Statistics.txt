@@ -1,0 +1,608 @@
+##Code for running stats for Predators
+   library(tidyr)
+   library(stringr)
+   library(ggplot2)
+   library(reshape2)
+   library(matrixStats)
+   library(dplyr)
+
+##Read in file titled SamplePts_BetaContandTemp_Predators.csv
+   betacomp<-read.csv(file.choose(),header=T,sep=",")
+
+   preds<-betacomp[-1]
+
+##convert from long to wide format
+   long<-preds%>%gather(ID,value,-c(elevation,ruggedness,slope,aspect,X,Y,climclass))
+
+##split ID column into multiple columns for scenario, climate model, year, etc.
+   long[c('Scenario', 'Model','Year','Functional Group','Metric')] <- str_split_fixed(long$ID, '_', 5)
+
+
+   long$Year<-as.factor(long$Year)
+   long$Metric<-as.factor(long$Metric)
+   long$Scenario<-as.factor(long$Scenario)
+   betametric<-subset(long, subset=c(Metric=="turnover"|Metric=="beta"|Metric=="tbi"|Metric=="losses"|Metric=="gains"))
+   datamod<-subset(betametric,subset=c(Model=="miroc"))
+
+##Converting back to wide format to make plots
+
+   data_wide <- dcast(datamod, elevation + ruggedness + aspect + slope + X + Y + Scenario + Model ~ Metric + Year, value.var="value")
+   data_wide2<-data_wide[complete.cases(data_wide), ]
+   names(data_wide2)
+
+##Adding columns to represent mean turnover, tbi variance, mean losses, mean tbi, percent losses, and tbi di  
+   data_wide2$turnovermean = apply(data_wide2[,42:50], 1, mean) 
+   data_wide2$turnoversd = apply(data_wide2[,42:50], 1, sd)   
+   data_wide2$tbivar = apply(data_wide2[,34:41], 1, var)   
+   data_wide2$lossesmean = apply(data_wide2[,26:33], 1, mean)
+   data_wide2$tbimean = apply(data_wide2[,34:41], 1, mean)   
+   data_wide2$perclossesmean<-(data_wide2$lossesmean/data_wide2$tbimean)
+   data_wide2$perclossesmean100<-(data_wide2$lossesmean/data_wide2$tbimean)*100
+   data_wide2$tbisd = apply(data_wide2[,34:41], 1, sd)
+   data_wide2$tbistability<-1/(data_wide2$tbisd/data_wide2$tbimean)
+   data_wide2$turnoverstability<-1/(data_wide2$turnoversd/data_wide2$turnovermean)
+   data_wide2[sapply(data_wide2, is.infinite)] <- NA
+   
+
+##This code calculates average percent change across columns for spatial turnover and appends it to the dataframe
+  pchange <- data_wide2 %>% 
+  transmute(
+    turn0_10 =  ((turnover_10 - turnover_0)/turnover_0)*100,
+    turn10_20 = ((turnover_20 - turnover_10)/turnover_10)*100,
+    turn20_30 = ((turnover_30 - turnover_20)/turnover_20)*100,
+    turn30_40 = ((turnover_40 - turnover_30)/turnover_30)*100,
+    turn40_50 = ((turnover_50 - turnover_40)/turnover_40)*100,
+    turn50_60 = ((turnover_60 - turnover_50)/turnover_50)*100,
+    turn60_70 = ((turnover_70 - turnover_60)/turnover_60)*100,
+    turn70_80 = ((turnover_80 - turnover_70)/turnover_70)*100
+  )
+  pchange[sapply(pchange, is.infinite)] <- NA
+  data_wide2$turnoverpchangemean<-rowMeans(pchange)
+  data_wide2<-data_wide2[complete.cases(data_wide2), ]
+
+##Splitting the dataset by high and low elevation
+   datalow<-subset(data_wide2,subset=c(elevation<1700))
+   datahigh<-subset(data_wide2,subset=c(elevation>=1700))
+
+
+##Statistics
+
+##EVERYTHING I USED
+##H1
+   ##This was the decision tree analysis
+
+##H2
+##Subset dataset to Scenario 1 prior to analyses to eliminate effect of management
+   dataS1<-subset(data_wide2,subset=c(Scenario=="S1"))
+   
+   dataS1$zelevation2<-scale(dataS1$elevation)
+   
+   model<-glm(perclossesmean~turnovermean*zelevation2,data=dataS1, family="binomial")
+   
+   model<-glm(tbimean~turnovermean*zelevation2,data=dataS1, family="binomial")
+   
+   ##The following needs to be a linear model with Box-Cox transformation instead of a glm because the response variable includes values greater than 1.
+   model<-lm(turnoverstability~turnovermean*zelevation2,data=dataS1)
+   library(MASS)
+   bc <- boxcox(turnoverstability ~ turnovermean*zelevation2,data=dataS1)
+   (lambda <- bc$x[which.max(bc$y)])
+   new_model <- lm(((turnoverstability^lambda-1)/lambda) ~ turnovermean*zelevation2,data=dataS1)
+
+##H3
+   ##The following needs to be a linear model with Box-Cox transformation instead of a glm because the response variable includes values greater than 1.
+   model<-lm(turnoverstability~turnovermean*Scenario,data=datalow, family="binomial")
+   bc <- boxcox(turnoverstability ~ turnovermean*Scenario,data=datalow)
+   (lambda <- bc$x[which.max(bc$y)])
+   new_mod_low <- lm(((turnoverstability^lambda-1)/lambda) ~ turnovermean*Scenario,data=datalow)
+
+   ##The following needs to be a linear model with Box-Cox transformation instead of a glm because the response variable includes values greater than 1.
+   model<-lm(turnoverstability~turnovermean*Scenario,data=datahigh, family="binomial")
+   bc <- boxcox(turnoverstability ~ turnovermean*Scenario,data=datahigh)
+   (lambda <- bc$x[which.max(bc$y)])
+   new_mod_high <- lm(((turnoverstability^lambda-1)/lambda) ~ turnovermean*Scenario,data=datahigh)
+
+   model<-glm(tbimean~turnovermean*Scenario,data=datalow, family="binomial")
+   model<-glm(tbimean~turnovermean*Scenario,data=datahigh, family="binomial")
+
+##I didn't trust the kruskal wallis results because looking at the figures, there was a lot of overlap between SDs for the scenarios, so I 
+##ran Cohen's d effect size calculations
+   library(effsize)
+   s1<-subset(data_wide2,subset=c(Scenario=="S1"))
+   s3<-subset(data_wide2,subset=c(Scenario=="S3"))
+   s6<-subset(data_wide2,subset=c(Scenario=="S6"))
+   cohen.d(s1$turnoverpchangemean,s3$turnoverpchangemean)
+   cohen.d(s1$turnoverpchangemean,s6$turnoverpchangemean)
+   cohen.d(s3$turnoverpchangemean,s6$turnoverpchangemean)
+
+   s1<-subset(datahigh,subset=c(Scenario=="S1"))
+   s3<-subset(datahigh,subset=c(Scenario=="S3"))
+   s6<-subset(datahigh,subset=c(Scenario=="S6"))
+   cohen.d(s1$turnoverpchangemean,s3$turnoverpchangemean)
+   cohen.d(s1$turnoverpchangemean,s6$turnoverpchangemean)
+   cohen.d(s3$turnoverpchangemean,s6$turnoverpchangemean)
+
+   s1<-subset(datalow,subset=c(Scenario=="S1"))
+   s3<-subset(datalow,subset=c(Scenario=="S3"))
+   s6<-subset(datalow,subset=c(Scenario=="S6"))
+   cohen.d(s1$turnoverpchangemean,s3$turnoverpchangemean)
+   cohen.d(s1$turnoverpchangemean,s6$turnoverpchangemean)
+   cohen.d(s3$turnoverpchangemean,s6$turnoverpchangemean)
+
+##Summary statistics for each scenario for percent change in spatial species turnover
+   aggregate(x=datalow$turnoverpchangemean,
+   by=list(datalow$Scenario),
+   FUN=mean)
+   aggregate(x=datalow$turnoverpchangemean,
+   by=list(datalow$Scenario),
+   FUN=sd)
+
+   aggregate(x=datahigh$turnoverpchangemean,
+   by=list(datahigh$Scenario),
+   FUN=mean)
+   aggregate(x=datahigh$turnoverpchangemean,
+   by=list(datahigh$Scenario),
+   FUN=sd)
+
+   aggregate(x=datalow$tbimean,
+   by=list(datalow$Scenario),
+   FUN=mean)
+   aggregate(x=datalow$tbimean,
+   by=list(datalow$Scenario),
+   FUN=sd)
+
+   aggregate(x=datahigh$tbimean,
+   by=list(datahigh$Scenario),
+   FUN=mean)
+   aggregate(x=datahigh$tbimean,
+   by=list(datahigh$Scenario),
+   FUN=sd)
+
+   aggregate(x=datalow$turnoverstability,
+   by=list(datalow$Scenario),
+   FUN=mean)
+   aggregate(x=datalow$turnoverstability,
+   by=list(datalow$Scenario),
+   FUN=sd)
+
+   aggregate(x=datahigh$turnoverstability,
+   by=list(datahigh$Scenario),
+   FUN=mean)
+   aggregate(x=datahigh$turnoverstability,
+   by=list(datahigh$Scenario),
+   FUN=sd)
+
+   aggregate(x=datalow$turnovermean,
+   by=list(datalow$Scenario),
+   FUN=mean)
+   aggregate(x=datalow$turnovermean,
+   by=list(datalow$Scenario),
+   FUN=sd)
+
+   aggregate(x=datahigh$turnovermean,
+   by=list(datahigh$Scenario),
+   FUN=mean)
+   aggregate(x=datahigh$turnovermean,
+   by=list(datahigh$Scenario),
+   FUN=sd)
+
+
+##Plotting I used
+
+
+##Line plots for stability by spatial turnover mean grouped by management scenario low elevation
+
+w<-ggplot(data=datalow, aes(x=turnovermean, y=turnoverstability, group=Scenario, color=Scenario)) +
+  geom_smooth(method=lm) +
+  ##stat_poly_line() +
+  ##stat_poly_eq() +
+  ggtitle("Predators")+
+  ylab(expression("β"[simICV])) +
+  xlab(expression("Mean β"[sim])) +
+  labs(colour = "Scenario") +
+  coord_cartesian(ylim = c(0, 12), xlim = c(0, 0.22)) +
+  ##scale_x_continuous(limits = c(0, 3000)) +
+  ##ylim(0, 6) +
+  theme(panel.background = element_rect(fill='white', colour= 'black', size = 0.5, linetype = "solid"),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank()) +
+  scale_color_manual(labels=c("low", "moderate", "high"),values=c('blue','black','magenta3')) +
+  theme_minimal()+
+  theme(legend.position = c(0.15, 0.9),
+         panel.grid.major.y = element_blank(),
+         panel.grid.minor.y = element_blank(),
+	 panel.grid.minor.x = element_blank(),
+	 panel.grid.major.x = element_blank(),
+         axis.line = element_line(),
+         axis.ticks = element_line(),
+	 strip.text = element_text(size = 18))+
+   theme(axis.text.x=element_text(size=16,color="black"),
+	 axis.text.y=element_text(size=16,color="black"),
+	 axis.title.x=element_text(size=18,color="black"),
+	 axis.title.y=element_text(size=18,color="black"),
+	 plot.title=element_text(size=18,color="black",hjust=0.5),
+	 legend.text=element_text(size=14,color="black"),
+         legend.title=element_blank(),
+         legend.spacing.y = unit(0.001, 'cm')) ##+
+         ##guides(colour = guide_legend(nrow = 1))
+	 ##guides(fill = guide_legend(byrow = TRUE))
+
+print(w)
+
+ggsave(filename="D:/Beta Diversity/Figures and Tables/PredatorsMIROC_turnoverstabilitybyturnoverallmanagelow.jpeg", width=6, height=4, dpi=600, plot=w)
+
+
+##Line plots for stability by spatial turnover mean grouped by management scenario low elevation
+
+w<-ggplot(data=datahigh, aes(x=turnovermean, y=turnoverstability, group=Scenario, color=Scenario)) +
+  geom_smooth(method=lm) +
+  ##stat_poly_line() +
+  ##stat_poly_eq() +
+  ggtitle("Predators")+
+  ylab(expression("β"[simICV])) +
+  xlab(expression("Mean β"[simICV])) +
+  labs(colour = "Scenario") +
+  ##coord_cartesian(ylim = c(0, 15), xlim = c(0, 0.22)) +
+  ##scale_x_continuous(limits = c(0, 3000)) +
+  ##ylim(0, 6) +
+  theme(panel.background = element_rect(fill='white', colour= 'black', size = 0.5, linetype = "solid"),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank()) +
+  scale_color_manual(labels=c("Scenario 1", "Scenario 3", "Scenario 6"),values=c('blue','black','magenta3')) +
+  theme_minimal()+
+  theme(legend.position = c(0.15, 0.9),
+         panel.grid.major.y = element_blank(),
+         panel.grid.minor.y = element_blank(),
+	 panel.grid.minor.x = element_blank(),
+	 panel.grid.major.x = element_blank(),
+         axis.line = element_line(),
+         axis.ticks = element_line(),
+	 strip.text = element_text(size = 18))+
+   theme(axis.text.x=element_text(size=16,color="black"),
+	 axis.text.y=element_text(size=16,color="black"),
+	 axis.title.x=element_text(size=18,color="black"),
+	 axis.title.y=element_text(size=18,color="black"),
+	 plot.title=element_text(size=18,color="black",hjust=0.5),
+	 legend.text=element_text(size=14,color="black"),
+         legend.title=element_blank(),
+         legend.spacing.y = unit(0.001, 'cm')) ##+
+         ##guides(colour = guide_legend(nrow = 1))
+	 ##guides(fill = guide_legend(byrow = TRUE))
+
+print(w)
+
+ggsave(filename="D:/Beta Diversity/Figures and Tables/PredatorsMIROC_turnoverstabilitybyturnoverallmanagehigh.jpeg", width=6, height=4, dpi=600, plot=w)
+
+
+
+
+
+
+
+
+w<-ggplot(data=datahigh, aes(x=turnovermean, y=turnoverstability, group=Scenario, color=Scenario)) +
+  geom_smooth(method=lm) +
+  ##stat_poly_line() +
+  ##stat_poly_eq() +
+  ggtitle("Predators")+
+  ylab(expression("β"[simICV])) +
+  xlab(expression("Mean β"[sim])) +
+  labs(colour = "Scenario") +
+  coord_cartesian(xlim = c(0, 0.2),ylim = c(0, 15)) +
+  theme(panel.background = element_rect(fill='white', colour= 'black', size = 0.5, linetype = "solid"),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank()) +
+  scale_color_manual(labels=c("Scenario 1", "Scenario 3", "Scenario 6"),values=c('blue','black','magenta3')) +
+  theme_minimal()+
+  theme(legend.position = c(0.15, 0.9),
+         panel.grid.major.y = element_blank(),
+         panel.grid.minor.y = element_blank(),
+	 panel.grid.minor.x = element_blank(),
+	 panel.grid.major.x = element_blank(),
+         axis.line = element_line(),
+         axis.ticks = element_line(),
+	 strip.text = element_text(size = 18))+
+   theme(axis.text.x=element_text(size=16,color="black"),
+	 axis.text.y=element_text(size=16,color="black"),
+	 axis.title.x=element_text(size=18,color="black"),
+	 axis.title.y=element_text(size=18,color="black"),
+	 plot.title=element_text(size=18,color="black",hjust=0.5),
+	 legend.text=element_text(size=14,color="black"),
+         legend.title=element_blank(),
+         legend.spacing.y = unit(0.001, 'cm')) ##+
+         ##guides(colour = guide_legend(nrow = 1))
+	 ##guides(fill = guide_legend(byrow = TRUE))
+
+print(w)
+
+
+ggsave(filename="D:/Beta Diversity/Figures and Tables/PredatorsMIROC_turnoverstabilitybymeanturnhigh.jpeg", width=6, height=4, dpi=600, plot=w)
+
+##Combining multiple datasets in one figure of stability and turnover by elevation category
+   r<-ggplot()+
+  geom_smooth(data=dataS1lowherb,aes(x=turnovermean, y=turnoverstability,color="herbivores low",linetype="herbivores low"),method=lm)+
+  geom_smooth(data=dataS1highherb,aes(x=turnovermean, y=turnoverstability,color="herbivores high",linetype="herbivores high"),method=lm)+
+  geom_smooth(data=dataS1lowinsect,aes(x=turnovermean, y=turnoverstability,color="insectivores low",linetype="insectivores low"),method=lm)+
+  geom_smooth(data=dataS1highinsect,aes(x=turnovermean, y=turnoverstability,color="insectivores high",linetype="insectivores high"),method=lm)+
+  geom_smooth(data=dataS1lowpred, aes(x=turnovermean, y=turnoverstability,color="predators low",linetype="predators low"),method=lm)+
+  geom_smooth(data=dataS1highpred, aes(x=turnovermean, y=turnoverstability,color="predators high",linetype="predators high"),method=lm)+
+  ylab(expression("β"[simICV])) +
+  xlab(expression("Mean β"[sim])) +
+  coord_cartesian(xlim = c(0, 0.3),ylim = c(0, 15)) +
+  theme(panel.background = element_rect(fill='white', colour= 'black', size = 0.5, linetype = "solid"),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank()) +
+  scale_color_manual(name="Trophic group and elevation",breaks=c("herbivores low", "herbivores high", "insectivores low", "insectivores high", "predators low", "predators high"),values=c("herbivores low"="dodgerblue2","herbivores high"="dodgerblue2","insectivores low"="black","insectivores high"="black","predators low"="red","predators high"="red")) +
+  scale_linetype_manual(name="Trophic group and elevation",breaks=c("herbivores low", "herbivores high", "insectivores low", "insectivores high", "predators low", "predators high"),values=c("herbivores low"=6,"herbivores high"=1,"insectivores low"=6,"insectivores high"=1,"predators low"=6,"predators high"=1)) +
+  theme_minimal()+
+  theme(legend.position = c(0.17, 0.78),
+         panel.grid.major.y = element_blank(),
+         panel.grid.minor.y = element_blank(),
+	 panel.grid.minor.x = element_blank(),
+	 panel.grid.major.x = element_blank(),
+         axis.line = element_line(),
+         axis.ticks = element_line(),
+	 strip.text = element_text(size = 18))+
+   theme(axis.text.x=element_text(size=16,color="black"),
+	 axis.text.y=element_text(size=16,color="black"),
+	 axis.title.x=element_text(size=18,color="black"),
+	 axis.title.y=element_text(size=18,color="black"),
+	 plot.title=element_text(size=18,color="black",hjust=0.5),
+	 legend.text=element_text(size=12,color="black"),
+         legend.title=element_blank(),
+	 legend.key=element_rect(fill=NA,colour=NA))
+
+print(r)
+
+ggsave(filename="D:/Beta Diversity/Figures and Tables/MIROC_turnoverstabilitybymeanturnalleleandtrophicgroups.jpeg", width=6, height=4, dpi=600, plot=r)
+
+
+
+##Percent change for species turnover by scenario plots, I ran and printed this for all elevations, low elevation, and high elevation
+
+##Run code to generate summary statistics for plotting for following plots
+
+   data_summary <- function(data, varname, groupnames){
+   require(plyr)
+   summary_func <- function(x, col){
+     c(mean = mean(x[[col]], na.rm=TRUE),
+       sd = sd(x[[col]], na.rm=TRUE))
+   }
+   data_sum<-ddply(data, groupnames, .fun=summary_func,
+                   varname)
+   data_sum <- rename(data_sum, c("mean" = varname))
+  return(data_sum)
+   }
+
+
+df3 <- data_summary(datalow, varname="turnoverpchangemean", groupnames=c("Scenario"))
+
+ scenario.labs <- c("Scenario 1", "Scenario 3", "Scenario 6")
+ names(scenario.labs) <- c("S1", "S3", "S6")
+
+k<-ggplot(df3, aes(x=Scenario, y=turnoverpchangemean))+
+ geom_point(size=4, stat="identity", color="firebrick",
+  position=position_dodge(.9))+
+  geom_errorbar(aes(ymin=turnoverpchangemean-sd, ymax=turnoverpchangemean+sd),width=.2,color="firebrick",
+  position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(-50, 100)) +
+  geom_hline(yintercept=0,linetype=2) +
+  scale_color_manual(values=c("firebrick")) +
+  ggtitle("Predators") +
+ ylab("Mean % change turnover ± SD") +
+  xlab("Management scenario") +
+ theme_minimal() +
+    theme(legend.position = c(0.12, 0.93),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  panel.grid.major.x = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(),
+  strip.text = element_text(size = 18))+
+    theme(axis.text.x=element_text(size=16,color="black"),
+  axis.text.y=element_text(size=16,color="black"),
+  axis.title.x=element_text(size=18,color="black"),
+  axis.title.y=element_text(size=18,color="black"),
+  plot.title=element_text(size=18,color="black",hjust=0.5),
+  legend.text=element_text(size=14,color="black"),
+          legend.title=element_blank(),
+          legend.spacing.y = unit(0.001, 'cm')) ##+
+          ##guides(colour = guide_legend(nrow = 1))
+  ##guides(fill = guide_legend(byrow = TRUE))
+
+ print(k)
+
+ggsave(filename="D:/Beta Diversity/Figures and Tables/PredatorsMIROC_meanturnoverpercentchangelowelevation.jpeg", width=6, height=4, dpi=600, plot=k)
+
+
+
+
+##Time series plot of TBI and its components of gains and losses for each scenario, use the long formatted dataset
+long$Year<-as.numeric(long$Year)
+ele<-subset(long,subset=c(elevation>=1700))
+mirocsub<-subset(ele, subset=c(Year>0))
+
+mirocsub$climclass<-as.factor(mirocsub$climclass)
+mirocsub$Year<-as.factor(mirocsub$Year)
+mirocsub$Metric<-as.factor(mirocsub$Metric)
+
+data_summary <- function(data, varname, groupnames){
+   require(plyr)
+   summary_func <- function(x, col){
+     c(mean = mean(x[[col]], na.rm=TRUE),
+       sd = sd(x[[col]], na.rm=TRUE))
+   }
+   data_sum<-ddply(data, groupnames, .fun=summary_func,
+                   varname)
+   data_sum <- rename(data_sum, c("mean" = varname))
+  return(data_sum)
+}
+
+df3 <- data_summary(mirocsub, varname="value", groupnames=c("Scenario","Year","Metric"))
+df3$Year<-as.factor(df3$Year)
+
+scenario.labs <- c("Scenario 1", "Scenario 3", "Scenario 6")
+names(scenario.labs) <- c("S1", "S3", "S6")
+
+
+
+r<-ggplot(df3, aes(x=Year, y=value, group=Metric)) +
+ geom_line(aes(color=Metric),size=1)+
+ geom_point(aes(color=Metric), size=3) +
+ facet_wrap(~Scenario,labeller = labeller(Scenario = scenario.labs))+
+ lims(y = c(0, 0.3))+
+ ggtitle("Herbivores >= 1700 m")+
+ ylab("Average dissimilarity") +
+ xlab("Year") +
+ labs(colour = "Metric") +
+ theme(panel.background = element_rect(fill='white', colour= 'black', size = 0.5, linetype = "solid"),
+panel.grid.major = element_blank(),
+panel.grid.minor = element_blank()) +
+scale_color_manual(labels=c("gains", "losses", "TBI"),values=c('gray70','gray40','magenta3')) +
+theme_minimal() +
+   theme(legend.position = c(0.08, 0.88),
+         panel.grid.major.y = element_blank(),
+         panel.grid.minor.y = element_blank(),
+	 panel.grid.minor.x = element_blank(),
+	 panel.grid.major.x = element_blank(),
+         axis.line = element_line(),
+         axis.ticks = element_line(),
+	 strip.text = element_text(size = 18))+
+   theme(axis.text.x=element_text(size=16,color="black"),
+	 axis.text.y=element_text(size=16,color="black"),
+	 axis.title.x=element_text(size=18,color="black"),
+	 axis.title.y=element_text(size=18,color="black"),
+	 plot.title=element_text(size=18,color="black",hjust=0.5),
+	 legend.text=element_text(size=14,color="black"),
+	 legend.title=element_text(size=16,color="black"),
+	 legend.spacing.y = unit(0.001, 'cm')) +
+	 guides(fill = guide_legend(byrow = TRUE))
+print(r)
+
+
+
+ggsave(filename="D:/Beta Diversity/Figures and Tables/HerbivoresBetaTempMIROCTrend_highelevation.jpeg", width=9, height=5, dpi=600, plot=r)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##EVERYTHING I TRIED BUT DIDN'T USE
+library(betareg)
+##Have to make sure there are no zeros or ones in data set to run beta regression, so I just converted 0s and 1s to low values to run the stat
+datalow$perclossesmean2<- replace(datalow$perclossesmean, datalow$perclossesmean < 0.0001, 0.0001) 
+datalow$perclossesmean3<- replace(datalow$perclossesmean2, datalow$perclossesmean2 == 1, 0.9999) 
+model = betareg(perclossesmean3 ~ turnovermean,data=datalow)
+##Kruskal Wallis test and Pairwise Mann-Whitney U tests for differences among scenarios for percent change species turnover
+model = kruskal.test(turnoverpchangemean~Scenario,data=datalow)
+posthoc=pairwise.wilcox.test(datalow$turnoverpchangemean,datalow$Scenario,p.adjust.method="none")
+##Model Diagnostics
+library(ggfortify)
+autoplot(model)
+##Diagnostics specifically for linear regression
+library(lindia)
+lindia::gg_diagnose(model) 
+lindia::gg_diagnose(model, plot.all=FALSE)[[4]]
+##Box-Cox tranformations for linear models
+bc <- boxcox(suitability ~ treatment,data=suitpre)
+(lambda <- bc$x[which.max(bc$y)])
+new_model <- lm(((suitability^lambda-1)/lambda) ~ treatment,data=suitpre)
+
+##Split into training and test datasets for model validation and run k-fold cross validation with 10 folds
+##Because I have a categorical predictor, I had to split the data into test and training sets so that each Scenario was represented equally,
+##I did this with the following code:
+library(groupdata2)
+library(dplyr)
+library(knitr)
+datalowcomplete<-datalow[complete.cases(datalow), ]
+
+##The linear regression seemed to fit relatively well for herbivores, no noticeable heterskedasticity, so I ran with that
+##Best RMSE score for herbivores for cross validation was the linear regression model with a score of ~0.185
+##Some other things I found out: I subset the datalowcomplete dataset by Scenario and ran each linear regression
+##separately for each scenario and found that S6 has the lowest R2 value (0.1182) while S1 has the highest for a first
+##order polynomial regression (0.318) 
+model = lm(perclossesmean ~ turnovermean*Scenario,data=datalowcomplete)
+parts <- partition(datalowcomplete, p = 0.2, cat_col = 'Scenario')
+test_set<-parts[[1]]
+train_set<-parts[[2]]
+train_set %>% 
+     count(Scenario) %>% 
+     kable(align = 'c')
+test_set %>% 
+     count(Scenario) %>% 
+     kable(align = 'c')
+##I also needed to make sure that each fold for cross validation was balanced among the three Scenarios:
+train_set <- fold(train_set, k = 10, cat_col = 'Scenario')
+train_set <- train_set %>% arrange(.folds)
+##Run the cross validation
+##Copy and paste, customize for the model you're using
+rmse <- function(predictions, targets){
+  sqrt(mean((predictions - targets)^2))
+}
+
+crossvalidate <- function(data, k, model, dependent, random = FALSE){
+  # 'data' is the training set with the ".folds" column
+  # 'k' is the number of folds we have
+  # 'model' is a string describing a linear regression model formula
+  # 'dependent' is a string with the name of the score column we want to predict
+  # 'random' is a logical (TRUE/FALSE); do we have random effects in the model?
+  
+  # Initialize empty list for recording performances
+  performances <- c()
+  
+  # One iteration per fold
+  for (fold in 1:k){
+    
+    # Create training set for this iteration
+    # Subset all the datapoints where .folds does not match the current fold
+    training_set <- data[data$.folds != fold,]
+    
+    # Create test set for this iteration
+    # Subset all the datapoints where .folds matches the current fold
+    testing_set <- data[data$.folds == fold,]
+    
+    ## Train model
+
+    # If there is a random effect,
+    # use lmer() to train model
+    # else use lm()
+
+    if (isFALSE(random)){
+      # Train linear mixed effects model on training set
+      model <- lm(model, training_set)
+    } else {
+      # Train linear model on training set
+      model <- lm(model,training_set)
+    }
+    ## Test model
+
+    # Predict the dependent variable in the testing_set with the trained model
+    predicted <- predict(model, testing_set, allow.new.levels = TRUE)
+
+    # Get the Root Mean Square Error between the predicted and the observed
+    RMSE <- rmse(predicted, testing_set[[dependent]])
+
+    # Add the RMSE to the performance list
+    performances[fold] <- RMSE
+  }
+  # Return the mean of the recorded RMSEs
+  return(c('RMSE' = mean(performances)))
+
+}
+crossvalidate(train_set, k = 10, model = model, dependent = 'perclossesmean3', random = FALSE)
+
+

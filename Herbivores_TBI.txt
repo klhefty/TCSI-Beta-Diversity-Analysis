@@ -1,0 +1,123 @@
+##Temporal Beta Diversity Code for Herbivores Comparing Pairwise Years
+##This code loops through each file in a Scenario/Climate Model folder and calculates TBI between Year 0 and
+##every subsequent year (ex: Y0-Y10,Y0-Y20,Y0-Y30, etc.)
+
+library(terra)
+library(dplyr)
+library(rgdal)
+library(adespatial)
+
+in.dir<- "C:/Users/User/Documents/Postdoc/Beta Diversity/out/Suitability Reclass/Scenario1/MIROC/"
+fnlg<-read.csv("C:/Users/User/Documents/Postdoc/TCSI Blueprint Project/Functional_Groups_v2.csv")
+scenarios<-list.dirs(in.dir, recursive = F)
+out.dir<-"C:/Users/User/Documents/Postdoc/Beta Diversity/out/Suitability Reclass/Test Output/Herbivores/"
+
+##This first bit of code sets up the reference year (Y0) in each folder for each run (runs 1-5). The number in
+##brackets for "scenarios" is the order in which the desired Y0 for each run shows up in the input file folder
+##(ex: YO for Run 1 is the 1st folder in the file list and Y0 for Run 5 is the 37th file in the file list).
+
+  grids <- list.files(scenarios[1], pattern = "*.tif$")
+
+  fg <- fnlg$Herbivores 
+  fg <- fg[fg != ""]
+  
+  #create a raster stack from the input raster files 
+  cgridstack <- rast(paste0(scenarios[1],"/", grids)) %>%
+  raster::subset(grep(paste(fg, collapse="|"), grids))
+
+
+  occurrences<-as.data.frame(cgridstack,xy=TRUE)
+  nrow(occurrences)
+  occurrences$longitude<-occurrences$x
+  occurrences$latitude<-occurrences$y
+  occurrences_1<-occurrences
+
+##Subset desired Run [i] in scenarios for selected Y0
+run<-scenarios[grepl("Run 1",scenarios)]
+
+##For loop comparing Y0 from run(i) to all other subsequent years in run(i)
+
+for(i in 1:length(run)){
+ grids <- list.files(run[i], pattern = "*.tif$")
+
+  fg <- fnlg$Herbivores 
+  fg <- fg[fg != ""]
+  
+  #create a raster stack from the input raster files 
+  cgridstack <- rast(paste0(run[i],"/", grids)) %>%
+  raster::subset(grep(paste(fg, collapse="|"), grids))
+
+
+  occurrences<-as.data.frame(cgridstack,xy=TRUE)
+  nrow(occurrences)
+  occurrences$longitude<-occurrences$x
+  occurrences$latitude<-occurrences$y
+  occurrences_2<-occurrences
+
+##Identify areas of overlap from year0 to year20, merge, and create two new dataframes with same extent
+newcurrent<-occurrences_1[complete.cases(occurrences_1), ]
+newfuture<-occurrences_2[complete.cases(occurrences_2), ]
+currentmerge<-left_join(newcurrent, newfuture, by = c("longitude", "latitude"))
+newcurrentcomplete<-currentmerge[complete.cases(currentmerge), ]
+newcurrentcomplete$id<-1:nrow(newcurrentcomplete)
+current <- newcurrentcomplete[c(3:99)]
+future <- newcurrentcomplete[c(104:200)]
+
+
+##Create polygon grid from areas of overlap between current and future
+dff <- subset(newcurrentcomplete, select=c(longitude,latitude,id))
+dff<-as.matrix(dff)
+bf <- rast(dff,type="xyz")
+poly<-as.polygons(bf,dissolve=FALSE)
+
+##Execute function for all combinations of years
+res <- TBI(current, future, method = "sorensen",test.t.perm = FALSE)
+
+tbi<-as.data.frame(res$TBI)
+bcdmat<-as.data.frame(res$BCD.mat)
+ptbi<-as.data.frame(res$p.TBI)
+
+poly$tbi <- tbi[,1]
+emptyraster <- rast(poly)
+res(emptyraster)=180
+tbiras <- rasterize(poly, field="tbi", emptyraster)
+
+
+writeRaster(tbiras, paste0(out.dir,gsub(in.dir,"",run[i]),"_herbivores_tbi.tif"), filetype="GTiff",overwrite=TRUE)
+
+
+poly$perc_loss<- bcdmat[,1]
+emptyraster <- rast(poly)
+res(emptyraster)=180
+losses <- rasterize(poly, field="perc_loss", emptyraster)
+
+writeRaster(losses, paste0(out.dir,gsub(in.dir,"",run[i]),"_herbivores_losses.tif"), filetype="GTiff",overwrite=TRUE)
+
+
+poly$perc_gain<- bcdmat[,2]
+emptyraster <- rast(poly)
+res(emptyraster)=180
+gains <- rasterize(poly, field="perc_gain", emptyraster)
+
+writeRaster(gains, paste0(out.dir,gsub(in.dir,"",run[i]),"_herbivores_gains.tif"), filetype="GTiff",overwrite=TRUE)
+
+
+##poly$ptbi <- ptbi[,1]
+##emptyraster <- rast(poly)
+##res(emptyraster)=180
+##pvalueras <- rasterize(poly, field="ptbi", emptyraster)
+
+##writeRaster(pvalueras, paste0(out.dir,gsub(in.dir,"",run[i]),"_herbivores_pvalue.tif"), filetype="GTiff",overwrite=TRUE)
+
+
+
+}
+
+
+
+
+
+
+
+
+
